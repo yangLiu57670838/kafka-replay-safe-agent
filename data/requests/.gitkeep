@@ -1,0 +1,1 @@
+# Holds the labelled synthetic support requests. Ground-truth labels stay out of the Kafka payload.

@@ -1,0 +1,1 @@
+# Strategy D ablation: idempotent ticket API only, with no completion record and no saved decisions.

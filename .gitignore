@@ -1,0 +1,1 @@
+# Excludes secrets, virtualenvs, Kafka and MongoDB volumes, and large generated experiment outputs.

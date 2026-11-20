@@ -1,0 +1,1 @@
+# Strategy B: dedupe on a recorded completion, without saved decisions or an idempotent ticket API.
