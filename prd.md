@@ -40,6 +40,7 @@ Hypotheses:
 ### In scope
 
 - One local Kafka broker, initially one partition and one consumer.
+- One shared Avro schema file for the Kafka request value, loaded by the producer and the agent from a local folder.
 - Python producer and consumer with manual offset commits.
 - Constrained agent workflow: classify, retrieve policy, prepare arguments, call ticket tool.
 - FastAPI mock ticket service and local MongoDB.
@@ -49,6 +50,7 @@ Hypotheses:
 ### Out of scope
 
 - AWS, production high availability, broker failover, Kubernetes, and frontend development.
+- A running Confluent Schema Registry, schema-id wire format, and schema-evolution experiments.
 - Jira or Confluence integration.
 - Semantic duplicate detection across different request IDs.
 - Training a transformer or implementing unrestricted autonomous planning.
@@ -73,7 +75,8 @@ The agent and ticket API run as separate processes. They use separate MongoDB co
 | Component | Choice |
 |---|---|
 | Broker | Official Apache Kafka Docker image, KRaft mode |
-| Kafka client | Python `confluent-kafka` |
+| Kafka client | Python `confluent-kafka`, bytes in and bytes out |
+| Kafka value encoding | Avro binary from `schemas/support-request-value.avsc`, via a local library such as `fastavro` |
 | Ticket service | FastAPI |
 | Persistence | MongoDB with persistent Docker volume |
 | Retrieval | Fixed policy corpus with BM25 baseline |
@@ -99,6 +102,8 @@ Repeated keys with conflicting payloads return HTTP 409 rather than silently ove
 
 ### Kafka request
 
+The logical request is:
+
 ```json
 {
   "schema_version": 1,
@@ -109,7 +114,28 @@ Repeated keys with conflicting payloads return HTTP 409 rather than silently ove
 }
 ```
 
-Ground-truth labels live in evaluator fixtures and are not provided to the agent.
+The Kafka value is that record encoded as Avro binary. The key remains the UTF-8 `event_id`. Ground-truth labels live in evaluator fixtures and are not provided to the agent.
+
+The shared schema file is `schemas/support-request-value.avsc`:
+
+```json
+{
+  "type": "record",
+  "name": "SupportRequest",
+  "namespace": "replay_safe",
+  "fields": [
+    {"name": "schema_version", "type": "int"},
+    {"name": "event_id", "type": "string"},
+    {"name": "customer_id", "type": "string"},
+    {"name": "message", "type": "string"},
+    {"name": "created_at", "type": "string"}
+  ]
+}
+```
+
+This folder is the mock schema registry. The producer and the agent look up the subject name `support-request-value` and load that file. Lookup is a local file read inside the existing Python processes. There is no registry process and no schema id stored in the Kafka record. The topic configuration names the subject, and both processes encode and decode with that same file.
+
+`confluent-kafka` only transports the resulting bytes. Encode and decode with a local Avro library. The ticket API, the agent ledger, and experiment exports stay JSON or BSON. Request hashes and ticket payload hashes use the decoded fields in a canonical form, so the Avro byte layout does not change identity checks.
 
 ### Agent ledger
 
@@ -150,7 +176,7 @@ The service must support a test mode that persists a ticket and then drops or wi
 
 ## 9. Agent behavior
 
-1. Poll and validate the Kafka record.
+1. Poll the Kafka record, decode its Avro value with the shared schema, and validate the fields.
 2. Derive stable request and action identities.
 3. Consult durable progress if the strategy supports it.
 4. Classify, retrieve policy, and prepare ticket arguments unless a decision is reusable.
@@ -233,6 +259,7 @@ Required plots: duplicate/missing outcomes by strategy and scenario, LLM calls p
 ## 14. Acceptance criteria
 
 - Local infrastructure starts through documented commands and persists data.
+- A published request decodes with `schemas/support-request-value.avsc`, and the Kafka key equals `event_id`.
 - Duplicate publication produces two Kafka offsets with the same logical ID.
 - A single published record is replayed after the scripted pre-commit crash.
 - Strategy A reproduces duplicate tickets in the targeted failure window.
@@ -250,7 +277,7 @@ These are outcomes to verify, not assumptions about results.
 
 | Days | Deliverable |
 |---|---|
-| 1–2 | Local Kafka/MongoDB, producer/consumer, manual commits, replay demo |
+| 1–2 | Local Kafka/MongoDB, shared Avro schema, producer/consumer round trip, manual commits, replay demo |
 | 3–4 | FastAPI modes, unique index, atomic creation and payload-conflict checks |
 | 5–6 | Dataset, policies, constrained agent, mock inference, strategies A/B |
 | 7–8 | Ledger, strategy C, crash and lost-response recovery |
@@ -269,6 +296,8 @@ kafka-replay-safe-agent/
 ├── compose.yaml
 ├── .env.example
 ├── pyproject.toml
+├── schemas/
+│   └── support-request-value.avsc
 ├── src/
 │   ├── producer/
 │   ├── agent/
@@ -320,5 +349,6 @@ Target 5–8 pages plus references and appendix:
 - [Kafka design and delivery semantics](https://kafka.apache.org/44/design/design/)
 - [MongoDB atomicity](https://www.mongodb.com/docs/manual/core/write-operations-atomicity/)
 - [MongoDB unique indexes](https://www.mongodb.com/docs/manual/core/index-unique/)
+- [Apache Avro specification](https://avro.apache.org/docs/1.12.0/specification/)
 
 Verify version-specific documentation during implementation and expand the bibliography with agent-recovery research.
