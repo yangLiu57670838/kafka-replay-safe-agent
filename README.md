@@ -27,7 +27,7 @@ sequenceDiagram
     Agent->>Kafka: Commit the offset
 ```
 
-## How an AI agent can wrongly work with Kafka
+## How an AI agent can go wrong when working with Kafka
 
 Kafka still owes the agent that record, because the agent never confirmed it was finished.
 
