@@ -45,12 +45,14 @@ Hypotheses:
 - Constrained agent workflow: classify, retrieve policy, prepare arguments, call ticket tool.
 - FastAPI mock ticket service and local MongoDB.
 - Deterministic mock inference and a limited real-LLM evaluation.
+- Langfuse Cloud traces for that real-LLM subset, written by the agent and keyed by `event_id`.
 - Scripted crashes, lost-response simulation, reproducible experiments, plots, and report.
 
 ### Out of scope
 
 - AWS, production high availability, broker failover, Kubernetes, and frontend development.
 - A running Confluent Schema Registry, schema-id wire format, and schema-evolution experiments.
+- A self-hosted Langfuse stack. The real-model subset uses Langfuse Cloud.
 - Jira or Confluence integration.
 - Semantic duplicate detection across different request IDs.
 - Training a transformer or implementing unrestricted autonomous planning.
@@ -66,6 +68,9 @@ Python producer → Kafka → Python agent → FastAPI ticket service
                         MongoDB ledger       MongoDB tickets
                               ↕
                      Policy retrieval + LLM
+                              ↓
+                        Langfuse Cloud
+                     (real-model runs only)
 
 Experiment controller → failure injection, restart, evaluation
 ```
@@ -81,6 +86,7 @@ The agent and ticket API run as separate processes. They use separate MongoDB co
 | Persistence | MongoDB with persistent Docker volume |
 | Retrieval | Fixed policy corpus with BM25 baseline |
 | Inference | Mock adapter plus configurable real-model adapter |
+| Real-model traces | Langfuse Cloud, write-only, keyed by `event_id` |
 | Infrastructure | Docker Compose |
 | Evaluation | Python, JSONL/CSV exports, standard plotting tools |
 
@@ -203,7 +209,7 @@ Output validation is an agent guardrail. Duplicate prevention is enforced by sta
 
 A/B/C are required. D is the preferred ablation: C versus D isolates the value of persisted decisions beyond ticket uniqueness. Repeated inference in D may produce conflicting payloads; record those conflicts.
 
-Use identical requests, model settings, prompts, policies, retry settings, and paired fault schedules. Instrumentation must not become hidden recovery state for baselines.
+Use identical requests, model settings, prompts, policies, retry settings, and paired fault schedules. Instrumentation must not become hidden recovery state for baselines. Langfuse traces follow the same rule: the agent writes them and does not read them to choose its next step.
 
 ## 11. Fault scenarios
 
@@ -233,6 +239,14 @@ Run the full matrix with deterministic mock inference first. Then run a smaller 
 
 Record exact model identifiers and settings. Do not substitute cached model responses in a way that conceals repeated inference. Low temperature does not guarantee deterministic decisions.
 
+### Real-model traces
+
+Langfuse Cloud records the limited real-LLM runs. Each generation includes the `event_id`, so a replay shows up as another call on the same request. The trace stores the prompt, model name, settings, output, token counts, and latency.
+
+The agent writes these traces and does not read them. A Langfuse record is not agent progress, not a response cache, and not a reason to skip inference or the ticket call. The mock matrix keeps its call counts on the local inference counter and does not call Langfuse.
+
+Ticket counts still come from MongoDB. Langfuse does not see the Kafka offset, the ledger, or the ticket document. A crash can end the process before the in-flight Langfuse event is sent, so that attempt remains in the unknown-usage count. Project keys stay in the local environment and out of Git.
+
 ## 13. Metrics and analysis
 
 Let `t_i` be persisted tickets for logical request `i`, and `N` be unique valid requests.
@@ -250,7 +264,7 @@ Let `t_i` be persisted tickets for logical request `i`, and `N` be unique valid 
 | Decision drift | Disagreement across repeated decisions for one request |
 | Payload conflicts | HTTP 409 responses and affected requests |
 
-Count tickets from MongoDB, not agent logs. Track attempted and completed inference separately because an interrupted call can have uncertain usage. Use mock-service counters or external inference instrumentation where feasible.
+Count tickets from MongoDB, not agent logs or Langfuse. Track attempted and completed inference separately because an interrupted call can have uncertain usage. Use the local counter for the mock matrix. Use Langfuse token and latency fields for the real-model subset, and keep attempts with no delivered trace in the unknown-usage count.
 
 Run at least five paired seeded repetitions of the mock matrix. Show run-level distributions and confidence intervals where feasible; retries from one request are not independent samples. Report incomplete requests explicitly rather than silently excluding them from latency results.
 
@@ -269,6 +283,7 @@ Required plots: duplicate/missing outcomes by strategy and scenario, LLM calls p
 - Different IDs create different tickets, even for identical message text.
 - Protected API uniqueness, concurrent calls, and conflicting payloads are verified.
 - Raw results include configurations, seeds, dependency versions, and model settings.
+- Real-model runs have Langfuse traces keyed by `event_id`, and those traces are not an input to recovery.
 - Report contains actual findings, limitations, negative results, and reproduction commands.
 
 These are outcomes to verify, not assumptions about results.
@@ -282,7 +297,7 @@ These are outcomes to verify, not assumptions about results.
 | 5–6 | Dataset, policies, constrained agent, mock inference, strategies A/B |
 | 7–8 | Ledger, strategy C, crash and lost-response recovery |
 | 9–10 | Experiment runner, mock matrix, strategy D if feasible |
-| 11–12 | Limited real-model runs, analysis, plots, failure inspection |
+| 11–12 | Limited real-model runs with Langfuse traces, analysis, plots, failure inspection |
 | 13–14 | Research report, README, reproducibility check, short demo |
 
 If time is limited, preserve A/B/C, duplicate publication, post-ticket crash, and a small real-model subset. Defer extra retrieval features and multiple consumers first.
@@ -336,6 +351,7 @@ Target 5–8 pages plus references and appendix:
 
 - No AWS charges for the proposed local setup. Check available RAM and Docker disk usage before implementation.
 - Use mock inference for the large matrix. Set a proposed US$10–20 real-model spending cap and size runs from measured token usage; this is not a price quote.
+- Use Langfuse Cloud only for the real-model subset. The mock matrix does not call it, and the project keys stay on the local machine.
 - A single-node MongoDB setup supports the required single-document atomic operation. Cross-document transactions are intentionally unnecessary.
 - A ledger cannot alone resolve uncertain external side effects; protected mode depends on ticket-service idempotency.
 - Crashes before an inference checkpoint can still repeat reasoning and charges.
@@ -350,5 +366,6 @@ Target 5–8 pages plus references and appendix:
 - [MongoDB atomicity](https://www.mongodb.com/docs/manual/core/write-operations-atomicity/)
 - [MongoDB unique indexes](https://www.mongodb.com/docs/manual/core/index-unique/)
 - [Apache Avro specification](https://avro.apache.org/docs/1.12.0/specification/)
+- [Langfuse observability overview](https://langfuse.com/docs)
 
 Verify version-specific documentation during implementation and expand the bibliography with agent-recovery research.
