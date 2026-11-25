@@ -66,9 +66,9 @@ flowchart TD
     deliver --> read["Read event_id from the message body"]
     read --> ledger{"Ledger for this event_id"}
     ledger -->|completed| commit["Commit the Kafka offset"]
-    ledger -->|decision saved| call["Call the ticket API with the action key"]
+    ledger -->|decision saved| ticketCall["Call the ticket API with the action key"]
     ledger -->|not stored| infer["Classify, then call the ticket API"]
-    call --> one["One ticket for that action key"]
+    ticketCall --> one["One ticket for that action key"]
     infer --> one
     one --> commit
 ```
