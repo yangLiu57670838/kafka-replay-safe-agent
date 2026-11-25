@@ -94,11 +94,29 @@ Pin dependency and container versions during implementation. No GPU or separate 
 
 ## 6. Identity and guarantee boundaries
 
-The producer creates a stable `event_id` once per logical request and preserves it across retries. Include it in the message body and normally use it as the Kafka key.
+The producer creates a stable `event_id` once per logical request and preserves it across retries. Include it in the message body and set the Kafka key to that same UTF-8 `event_id`.
 
-Kafka keys control partition routing; they do not deduplicate requests. Two records with different offsets may share one logical request ID.
+### Key, partition, and consumer group
 
-The runtime derives `action_key = event_id + ':create-ticket'`. The LLM must not generate or modify this key. Do not derive it from variable model-generated ticket text.
+The benchmark topic has one partition and one consumer. Every record is appended to that partition. The offset is the consumer group's position on it. One in-flight record keeps a later commit from skipping earlier unfinished work. Extra partitions and extra consumers are deferred.
+
+With one partition, the key does not change routing. It also does not deduplicate. Two records with different offsets may share one `event_id`, which is the duplicate-publication case. The agent takes identity from `event_id` in the decoded Avro value. Commit and skip decisions use the ledger and the ticket API, then the Kafka offset. Kafka record headers are unused: no schema id and no idempotency field on the record. The `Idempotency-Key` header is HTTP, on `POST /tickets`.
+
+The consumer uses a stable `group.id` and `enable.auto.commit=false`. Kafka stores the committed offset for that group, topic, and partition. The agent does not persist the offset. A restart joins the same group and resumes at the last committed position. A crash before commit leaves that position unchanged, so the same record is delivered again. A different group has its own position and would miss that replay. `auto.offset.reset=earliest` applies only when the group has no committed offset yet. Isolate groups and topics between strategy runs, or reset offsets explicitly before the run.
+
+### Recovery on redelivery
+
+Redelivery after a missing commit is the situation under test. The agent does not store the previous offset in order to skip it. Kafka already holds the group's position. An agent-side copy used as a skip list would drop work whose ticket or ledger write never finished.
+
+On each delivery, including a replay:
+
+1. Decode the Avro value and derive `action_key = event_id + ':create-ticket'`. The model must not generate or modify this key, and the key must not be derived from model-generated ticket text.
+2. If the strategy keeps a ledger, load progress for that `event_id`. Status `completed` ends the workflow without another ticket. A saved decision is reused when the strategy has one.
+3. Call the ticket API. Protected mode sends the action key as `Idempotency-Key`. The same key and the same payload return the original ticket. A conflicting payload returns HTTP 409.
+4. Persist completion when the strategy records it.
+5. Commit this record's offset only after those steps.
+
+Strategy A has no ledger and no idempotent API, so the redelivery can insert a second ticket. Strategies B and C consult the ledger. Strategies C and D rely on the ticket API. The Kafka offset stays the group's committed position.
 
 Protected mode enforces at most one ticket per action key. Eventual completion is a separate property measured after recovery. Identical content with different request IDs represents distinct work in this study.
 
@@ -192,7 +210,7 @@ The service must support a test mode that persists a ticket and then drops or wi
 8. Persist completion if enabled.
 9. Commit the consumed record's offset synchronously.
 
-Set `enable.auto.commit=false` and preserve the consumer group across restarts. Establish starting offsets explicitly per run. `auto.offset.reset=earliest` is not a reset mechanism for groups with valid committed offsets.
+Set `enable.auto.commit=false` and preserve the consumer group across restarts. Kafka stores that group's offset; the agent does not. Establish starting offsets explicitly per run. `auto.offset.reset=earliest` is not a reset mechanism for groups with valid committed offsets. Recovery on redelivery is specified in section 6.
 
 Use one in-flight message initially so commits cannot skip unfinished earlier work. Apply bounded retries to transient failures. Expose validation failures and exhausted retries as failed outcomes rather than counting them as successful completion.
 
