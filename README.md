@@ -64,13 +64,22 @@ On the second delivery the agent looks up progress by `event_id` in the MongoDB 
 flowchart TD
     restart["Same consumer group restarts"] --> deliver["Kafka delivers the uncommitted record"]
     deliver --> read["Read event_id from the message body"]
-    read --> ledger{"Ledger for this event_id"}
+
+    subgraph mongo ["MongoDB"]
+        ledger{"Ledger lookup by event_id"}
+        tickets{"Ticket lookup by unique action_key"}
+    end
+
+    read --> ledger
     ledger -->|completed| commit["Commit the Kafka offset"]
-    ledger -->|decision saved| ticketCall["Call the ticket API with the action key"]
-    ledger -->|not stored| infer["Classify, then call the ticket API"]
-    ticketCall --> one["One ticket for that action key"]
-    infer --> one
-    one --> commit
+    ledger -->|decision saved| api["Ticket API sends the action key"]
+    ledger -->|not stored| infer["Classify, then send the action key"]
+    api --> tickets
+    infer --> tickets
+    tickets -->|already stored| keep["Return the original ticket"]
+    tickets -->|not stored| insert["Insert one ticket"]
+    keep --> commit
+    insert --> commit
 ```
 
 1. A completed ledger record means the work is already done.
